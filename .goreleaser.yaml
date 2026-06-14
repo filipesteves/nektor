@@ -1,0 +1,46 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: nektor
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/filipesteves/nektor/cmd.Version={{.Version}}
+
+archives:
+  # Human-friendly tarballs (for manual installs / Homebrew).
+  - id: tarballs
+    ids: [nektor]
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+  # Raw binary assets consumed by the self-updater (nektor_darwin_arm64, etc.).
+  # The name_template here must exactly match what selfupdate.go constructs in
+  # assetURL() so the binary replacement works correctly.
+  - id: binaries
+    ids: [nektor]
+    formats: [binary]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"

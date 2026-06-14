@@ -1,0 +1,15 @@
+# Build artifacts
+nektor
+nektor.exe
+dist/
+
+# Go tooling
+vendor/
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Local IDE / tooling config
+.claude/
+*.local.json
