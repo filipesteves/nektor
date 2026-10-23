@@ -5,8 +5,9 @@ Raspberry Pis, upgrading Portainer, restarting DNS — and bring them back insta
 with a fuzzy-searchable TUI.
 
 ```
-nektor add        → pick from shell history, add metadata
-nk                → fuzzy-search saved commands, place on prompt
+nk add <command>  → save a command directly, prompts for a description
+nektor add        → pick from shell history, add a description to each
+nk                → fuzzy-search saved commands, place on prompt (e edit, d delete)
 nektor edit pi    → edit a saved command in a TUI form
 nektor delete pi  → delete with confirmation prompt
 ```
@@ -37,8 +38,9 @@ Linux ARM64 system.
 nektor install
 ```
 
-This opens a TUI to choose your output mode, then (for shell mode) appends the
-`nk` wrapper function to `~/.zshrc` or `~/.bashrc`.
+This opens a TUI to choose your output mode, then (for shell mode) adds the
+`nk` wrapper function to `~/.zshrc` or `~/.bashrc`. Running it again updates an
+existing `nk` function in place, so re-run it after upgrading nektor.
 
 ```sh
 source ~/.zshrc   # or open a new terminal
@@ -54,17 +56,42 @@ before running.
 
 ```
 ❯ nk
-┌─────────────────────────────────────────────────┐
-│  nektor                              5 commands  │
-│ > pi-ssh-living-room                             │
-│   SSH into living room Pi  [ssh, pi]             │
-│   $ ssh pi@192.168.1.42                          │
-│   portainer-upgrade                              │
-│   Pull and restart Portainer  [docker, home]     │
-│   $ docker pull portainer/portainer-ce:latest …  │
-└─────────────────────────────────────────────────┘
-  ↑/↓ navigate  / filter  enter select  q quit
+  nektor
+
+  2 items
+
+ ▶  SSH into living room Pi
+    $ ssh pi@192.168.1.42
+
+    Pull and restart Portainer
+    $ docker pull portainer/portainer-ce:latest && docker stop portainer …
+
+  ↑/k up • ↓/j down • / filter • enter select • e edit • d delete • q quit
 ```
+
+| Key     | Action                                              |
+|---------|-----------------------------------------------------|
+| `/`     | Fuzzy-filter by description or command              |
+| `enter` | Place the highlighted command on the prompt         |
+| `e`     | Edit the highlighted command's description/command  |
+| `d`     | Delete the highlighted command (confirm with `y`)   |
+| `q`     | Quit                                                |
+
+Edits and deletes are saved immediately, and an active filter is kept.
+
+`nk` with arguments forwards them to `nektor`, so `nk add …`, `nk edit …` etc.
+work too. If you installed the wrapper before this was supported, re-run
+`nektor install` to update it.
+
+### `nektor add <command>` — save a command directly
+
+```sh
+nk add ssh pi@192.168.1.42
+nk add 'docker ps | grep portainer'   # quote anything with |, &&, >, ;, etc.
+```
+
+Saves the command and prompts for a description. Without quotes, your shell
+interprets pipes and `&&` itself, so only the part before them would be saved.
 
 ### `nektor add` — save from history
 
@@ -75,12 +102,16 @@ nektor add
 Opens your shell history in a filterable list. `Tab` toggles selection on each
 entry; `Enter` confirms. For each selected entry a short form appears:
 
-- **Alias** — short name you'll search by (required)
-- **Description** — what the command does (required)
-- **Tags** — comma-separated, optional (`ssh, pi, home`)
-- **Command** — pre-filled from history, editable
+- **Description** — what the command does; this is what you search by in `nk`
+- **Command** — pre-filled from history, editable (required)
 
-Duplicates (same alias or same command string) are silently skipped.
+Press `Enter` to save, `Tab` to move between fields, `Esc` to cancel. Commands
+that are already saved are skipped.
+
+Each command also gets an alias, generated from its description
+(`SSH into living room Pi` → `ssh-into-living-room-pi`). Aliases are used by
+`nektor edit <alias>` and `nektor delete <alias>`, and are listed in
+`commands.toml`.
 
 ### `nektor edit`
 

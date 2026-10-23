@@ -2,6 +2,8 @@ package ui
 
 // PickModel is the Bubble Tea model for `nektor pick`. It shows a filterable
 // list of saved commands and returns the selected command string via Result.
+// Commands can also be edited (e) or deleted (d) in place; changes are written
+// to the store immediately.
 //
 // Usage:
 //
@@ -100,11 +102,24 @@ func SetUpdateAvailableFunc(f func() string) {
 	updateAvailableFunc = f
 }
 
+// pickMode tracks what the pick TUI is currently doing.
+type pickMode int
+
+const (
+	modeBrowse pickMode = iota
+	modeEdit
+	modeConfirmDelete
+)
+
 // PickModel is the model for the pick TUI.
 type PickModel struct {
 	list            list.Model
-	Result          string // set when user confirms selection
-	UpdateRequested string // non-empty when user pressed ctrl+u; holds the version string
+	mode            pickMode
+	form            FormModel     // active while mode == modeEdit
+	target          store.Command // command being edited or deleted
+	status          string        // one-line feedback shown under the list
+	Result          string        // set when user confirms selection
+	UpdateRequested string        // non-empty when user pressed ctrl+u; holds the version string
 	quitting        bool
 	width           int
 	height          int
@@ -112,25 +127,46 @@ type PickModel struct {
 
 // NewPickModel creates a PickModel from the provided saved commands.
 func NewPickModel(commands []store.Command) PickModel {
-	items := make([]list.Item, len(commands))
-	for i, c := range commands {
-		items[i] = commandItem{cmd: c}
-	}
-
 	delegate := newPickDelegate()
-	l := list.New(items, delegate, 0, 0)
+	l := list.New(commandItems(commands), delegate, 0, 0)
 	l.Title = "nektor"
 	l.Styles.Title = styleTitle
 	l.SetShowStatusBar(true)
 	l.SetFilteringEnabled(true)
 	l.SetShowHelp(true)
+	// "d" is a next-page key by default; free it up for delete.
+	l.KeyMap.NextPage = key.NewBinding(
+		key.WithKeys("right", "l", "pgdown", "f"),
+		key.WithHelp("→/l/pgdn", "next page"),
+	)
 	l.AdditionalShortHelpKeys = func() []key.Binding {
 		return []key.Binding{
 			key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "select")),
+			key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
+			key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
 		}
 	}
 
 	return PickModel{list: l}
+}
+
+func commandItems(commands []store.Command) []list.Item {
+	items := make([]list.Item, len(commands))
+	for i, c := range commands {
+		items[i] = commandItem{cmd: c}
+	}
+	return items
+}
+
+// reload refreshes the list from the store after an edit or delete. SetItems
+// re-applies any active filter, so the user keeps their search.
+func (m *PickModel) reload() tea.Cmd {
+	commands, err := store.LoadCommands()
+	if err != nil {
+		m.status = styleDanger.Render("  Reloading commands: " + err.Error())
+		return nil
+	}
+	return m.list.SetItems(commandItems(commands))
 }
 
 func (m PickModel) Init() tea.Cmd {
@@ -138,18 +174,41 @@ func (m PickModel) Init() tea.Cmd {
 }
 
 func (m PickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		m.list.SetSize(msg.Width, msg.Height-2)
+	if size, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width = size.Width
+		m.height = size.Height
+		m.list.SetSize(size.Width, size.Height-2)
+	}
 
+	switch m.mode {
+	case modeEdit:
+		return m.updateEdit(msg)
+	case modeConfirmDelete:
+		return m.updateConfirmDelete(msg)
+	}
+
+	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		// Don't capture keys while filtering — the list handles them.
 		if m.list.FilterState() == list.Filtering {
 			break
 		}
+		m.status = ""
 		switch msg.String() {
+		case "e":
+			if item, ok := m.list.SelectedItem().(commandItem); ok {
+				m.target = item.cmd
+				m.form = NewEditFormModel(item.cmd)
+				m.form, _ = updateForm(m.form, tea.WindowSizeMsg{Width: m.width, Height: m.height})
+				m.mode = modeEdit
+				return m, m.form.Init()
+			}
+		case "d":
+			if item, ok := m.list.SelectedItem().(commandItem); ok {
+				m.target = item.cmd
+				m.mode = modeConfirmDelete
+				return m, nil
+			}
 		case "enter":
 			if item, ok := m.list.SelectedItem().(commandItem); ok {
 				m.Result = item.cmd.Command
@@ -178,12 +237,77 @@ func (m PickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// updateForm forwards msg to the embedded form. The form returns tea.Quit when
+// it's submitted or cancelled; callers check its flags instead of running that.
+func updateForm(f FormModel, msg tea.Msg) (FormModel, tea.Cmd) {
+	updated, cmd := f.Update(msg)
+	return updated.(FormModel), cmd
+}
+
+func (m PickModel) updateEdit(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.form, cmd = updateForm(m.form, msg)
+
+	switch {
+	case m.form.Cancelled:
+		m.mode = modeBrowse
+		return m, nil
+	case m.form.Submitted:
+		m.mode = modeBrowse
+		r := m.form.Result
+		updated := store.Command{
+			Alias:       r.Alias,
+			Description: r.Description,
+			Tags:        r.Tags,
+			Command:     r.Command,
+		}
+		if err := store.UpdateCommand(m.target.Alias, updated); err != nil {
+			m.status = styleDanger.Render("  Saving changes: " + err.Error())
+			return m, nil
+		}
+		m.status = styleSuccess.Render(fmt.Sprintf("  Updated %q", updated.Description))
+		return m, m.reload()
+	}
+	return m, cmd
+}
+
+func (m PickModel) updateConfirmDelete(msg tea.Msg) (tea.Model, tea.Cmd) {
+	km, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	m.mode = modeBrowse
+	if km.String() != "y" && km.String() != "Y" {
+		m.status = styleSubtle.Render("  Delete cancelled")
+		return m, nil
+	}
+	if err := store.DeleteCommand(m.target.Alias); err != nil {
+		m.status = styleDanger.Render("  Deleting: " + err.Error())
+		return m, nil
+	}
+	m.status = styleSuccess.Render(fmt.Sprintf("  Deleted %q", m.target.Description))
+	return m, m.reload()
+}
+
 func (m PickModel) View() string {
 	if m.quitting {
 		return ""
 	}
 
+	if m.mode == modeEdit {
+		return m.form.View()
+	}
+
 	view := m.list.View()
+
+	switch {
+	case m.mode == modeConfirmDelete:
+		view += "\n" + styleDanger.Render(
+			fmt.Sprintf("  Delete %q? [y/N]", m.target.Description),
+		)
+	case m.status != "":
+		view += "\n" + m.status
+	}
 
 	// Append update notice footer when an update is cached.
 	if updateAvailableFunc != nil {
