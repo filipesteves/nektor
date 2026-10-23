@@ -34,6 +34,7 @@ type FormModel struct {
 	Cancelled bool
 	Result    FormResult
 	title     string
+	prefill   FormResult // carries fields the form doesn't expose (alias, tags) through to Result
 	width     int
 	height    int
 }
@@ -41,6 +42,14 @@ type FormModel struct {
 // NewFormModel creates a blank form for adding a new command.
 func NewFormModel(title string) FormModel {
 	return newFormModel(title, FormResult{})
+}
+
+// NewCommandFormModel creates a form with the command pre-filled and focus on
+// the description field, for saving a command passed on the command line.
+func NewCommandFormModel(command string) FormModel {
+	m := newFormModel("Save command", FormResult{Command: command})
+	m.inputs[fieldCommand].CursorEnd()
+	return m
 }
 
 // NewEditFormModel creates a pre-populated form for editing an existing command.
@@ -54,7 +63,7 @@ func NewEditFormModel(cmd store.Command) FormModel {
 }
 
 func newFormModel(title string, prefill FormResult) FormModel {
-	m := FormModel{title: title}
+	m := FormModel{title: title, prefill: prefill}
 
 	placeholders := [fieldCount]string{
 		"Expose local dev server via ngrok",
@@ -64,7 +73,7 @@ func newFormModel(title string, prefill FormResult) FormModel {
 	for i := 0; i < fieldCount; i++ {
 		t := textinput.New()
 		t.Placeholder = placeholders[i]
-		t.CharLimit = 256
+		t.CharLimit = 1024
 		m.inputs[i] = t
 	}
 
@@ -116,16 +125,15 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "enter":
-			// From last field, submit; otherwise advance.
-			if m.focused == fieldCommand {
+			// Submit as soon as the required command is filled in (it usually
+			// is pre-filled); otherwise advance towards it.
+			command := strings.TrimSpace(m.inputs[fieldCommand].Value())
+			if command != "" {
 				description := strings.TrimSpace(m.inputs[fieldDescription].Value())
-				command := strings.TrimSpace(m.inputs[fieldCommand].Value())
-				if command == "" {
-					// Stay on form — required field missing.
-					return m, nil
-				}
 				m.Result = FormResult{
+					Alias:       m.prefill.Alias,
 					Description: description,
+					Tags:        m.prefill.Tags,
 					Command:     command,
 				}
 				m.Submitted = true
@@ -176,8 +184,8 @@ func (m FormModel) View() string {
 		b.WriteString("\n\n")
 	}
 
-	help := "tab/↓ next • shift+tab/↑ prev • enter confirm • esc cancel"
-	if m.focused != fieldCommand {
+	help := "tab/↓ next • shift+tab/↑ prev • enter save • esc cancel"
+	if strings.TrimSpace(m.inputs[fieldCommand].Value()) == "" {
 		help = "tab/↓ next field • enter advance • esc cancel"
 	}
 	b.WriteString(styleHelp.Render(help))

@@ -215,6 +215,11 @@ func nkWrapper(shell string) string {
 		return `
 # nektor - place selected command on the readline buffer
 nk() {
+  # Any arguments are a nektor subcommand, e.g. "nk add ssh pi@pi.local".
+  if [[ $# -gt 0 ]]; then
+    nektor "$@"
+    return
+  fi
   local cmd
   cmd=$(nektor pick)
   if [[ -n "$cmd" ]]; then
@@ -228,6 +233,11 @@ nk() {
 	return `
 # nektor - place selected command on the prompt line
 nk() {
+  # Any arguments are a nektor subcommand, e.g. "nk add ssh pi@pi.local".
+  if [[ $# -gt 0 ]]; then
+    nektor "$@"
+    return
+  fi
   local cmd
   cmd=$(nektor pick)
   if [[ -n "$cmd" ]]; then
@@ -248,8 +258,7 @@ func appendShellWrapper(shell, rcPath string) error {
 		return fmt.Errorf("reading %s: %w", rcPath, err)
 	}
 	if strings.Contains(string(existing), wrapperSentinel) {
-		fmt.Printf("'nk' function already present in %s — skipping.\n", rcPath)
-		return nil
+		return replaceShellWrapper(shell, rcPath, string(existing))
 	}
 
 	f, err := os.OpenFile(rcPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
@@ -261,5 +270,36 @@ func appendShellWrapper(shell, rcPath string) error {
 	if _, err := fmt.Fprint(f, nkWrapper(shell)); err != nil {
 		return fmt.Errorf("writing to %s: %w", rcPath, err)
 	}
+	return nil
+}
+
+// replaceShellWrapper rewrites a previously installed nk function in place so
+// re-running install picks up wrapper changes. It only touches the block that
+// starts at the sentinel comment and ends at the function's closing brace.
+func replaceShellWrapper(shell, rcPath, content string) error {
+	start := strings.Index(content, wrapperSentinel)
+	end := strings.Index(content[start:], "\n}\n")
+	if end < 0 {
+		fmt.Printf("'nk' function in %s looks hand-edited — leaving it alone.\n", rcPath)
+		return nil
+	}
+	end += start + len("\n}\n")
+
+	// nkWrapper starts with a blank line that is already present before the sentinel.
+	wrapper := strings.TrimPrefix(nkWrapper(shell), "\n")
+	if content[start:end] == wrapper {
+		fmt.Printf("'nk' function already up to date in %s — skipping.\n", rcPath)
+		return nil
+	}
+
+	info, err := os.Stat(rcPath)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", rcPath, err)
+	}
+	updated := content[:start] + wrapper + content[end:]
+	if err := os.WriteFile(rcPath, []byte(updated), info.Mode().Perm()); err != nil {
+		return fmt.Errorf("writing %s: %w", rcPath, err)
+	}
+	fmt.Printf("Updated 'nk' function in %s\n", rcPath)
 	return nil
 }

@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -12,14 +13,29 @@ import (
 )
 
 var addCmd = &cobra.Command{
-	Use:   "add",
-	Short: "Add commands from shell history",
-	Long: `Opens a filterable list of your shell history. Select entries with Tab,
-then confirm with Enter to fill in alias/description metadata for each one.`,
-	RunE: runAdd,
+	Use:   "add [command...]",
+	Short: "Add a command directly, or pick commands from shell history",
+	Long: `With arguments, saves the given command and prompts for a description:
+
+  nektor add ssh pi@192.168.1.42
+  nektor add 'docker ps | grep portainer'   # quote pipes, &&, redirects, etc.
+
+Without arguments, opens a filterable list of your shell history. Select entries
+with Tab, then confirm with Enter to fill in a description for each one.`,
+	// Everything after "add" is the command to save, so don't let cobra treat
+	// its flags (e.g. "ls -la") as nektor flags.
+	DisableFlagParsing: true,
+	RunE:               runAdd,
 }
 
-func runAdd(_ *cobra.Command, _ []string) error {
+func runAdd(c *cobra.Command, args []string) error {
+	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
+		return c.Help()
+	}
+	if len(args) > 0 {
+		return addDirect(strings.Join(args, " "))
+	}
+
 	cfg, err := store.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -96,5 +112,48 @@ func runAdd(_ *cobra.Command, _ []string) error {
 		fmt.Printf(" Skipped %d duplicate(s).", skipped)
 	}
 	fmt.Println()
+	return nil
+}
+
+// addDirect saves a command given on the command line, prompting only for its
+// description.
+func addDirect(command string) error {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return fmt.Errorf("no command given")
+	}
+
+	existing, err := store.LoadCommands()
+	if err != nil {
+		return fmt.Errorf("loading existing commands: %w", err)
+	}
+	for _, c := range existing {
+		if c.Command == command {
+			fmt.Fprintf(os.Stderr, "Already saved as %q.\n", c.Description)
+			return nil
+		}
+	}
+
+	p := tea.NewProgram(ui.NewCommandFormModel(command), tea.WithAltScreen())
+	finalModel, err := p.Run()
+	if err != nil {
+		return fmt.Errorf("TUI error: %w", err)
+	}
+
+	fm, ok := finalModel.(ui.FormModel)
+	if !ok || fm.Cancelled || !fm.Submitted {
+		fmt.Fprintln(os.Stderr, "Cancelled.")
+		return nil
+	}
+
+	entry := store.Command{
+		Alias:       store.GenerateAlias(fm.Result.Description, existing),
+		Description: fm.Result.Description,
+		Command:     fm.Result.Command,
+	}
+	if err := store.AddCommand(entry); err != nil {
+		return err
+	}
+	fmt.Printf("Saved %q.\n", entry.Description)
 	return nil
 }
